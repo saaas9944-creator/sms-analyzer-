@@ -299,6 +299,7 @@ function parseRajhi(body, ms) {
   // شراء
   if (body.indexOf('شراء') === 0) {
     var cardM = rem(body, [/بطاقة:(\d{4})/, /عبر:?(\d{4})/]);
+    if (cardM && cardM[1] === '2203') return; // مستبعدة
     var amtM  = rem(body, [/اجمالي المبلغ المستحق: ([\d,.]+) SAR/, /مبلغ:SAR ([\d,.]+)/, /مبلغ: ([\d,.]+) SAR/, /مبلغ:([\d,.]+) SAR/, /بـSR ([\d,.]+)/, /بـSAR ([\d,.]+)/, /بـ ([\d,.]+) SAR/]);
     var merM  = rem(body, [/لدى:([^\n]+)/, /لـ([^\n]+)/]);
     var balM  = rem(body, [/رصيد:SAR ([\d,.]+)/, /رصيد: ([\d,.]+) SAR/, /رصيد:([\d,.]+) SAR/, /رصيد:([\d,.]+) SR/]);
