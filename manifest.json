@@ -1,0 +1,14 @@
+{
+  "name": "محلل رسائل البنك",
+  "short_name": "محلل SMS",
+  "start_url": "./sms_analyzer.html",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "lang": "ar",
+  "dir": "rtl",
+  "icons": [
+    { "src": "android-chrome-192x192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "android-chrome-512x512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
