@@ -1,4 +1,4 @@
-var CACHE = 'sms-v1';
+var CACHE = 'sms-v2';
 var FILES = ['./sms_analyzer.html'];
 
 self.addEventListener('install', function(e) {
