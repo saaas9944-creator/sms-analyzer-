@@ -198,7 +198,9 @@ var manualState = {
   grocWeeklyQ: [0,0,0,0],
   grocCashback: true,
   dailyCashback: false,
-  excludedTransfers: {}, // مفاتيح الحوالات المستبعدة (dateMs كمفتاح)
+  grocDailyAdj: 0,
+  grocWeeklyAdj: 0,
+  excludedTransfers: {},
 };
 
 // ========== تحميل الملف ==========
@@ -333,7 +335,7 @@ function parseBSF(body, ms) {
     return;
   }
   if (body.indexOf('شراء عبر نقاط البيع') === 0) {
-    var amtM  = body.match(/بـ SAR ([\d,.]+)/);
+    var amtM  = rem(body, [/بـ SAR ([\d,.]+)/, /بـ ([\d,.]+) SAR/]);
     var merM  = body.match(/من ([^\n]+)/);
     var cardM = body.match(/(\d{4})\*/);
     var balM  = rem(body, [/رصيد المتوفر: SAR ([\d,.]+)/, /رصيد SAR ([\d,.]+)/]);
@@ -438,27 +440,31 @@ function renderVisa5940() {
   var limit = VISA5940.limit;
 
   // حساب الرصيد المتاح قبل وبعد الكشف لكل شهر
+  // قبل الكشف = بعد الشهر السابق + إجمالي الأقساط
+  // بعد الكشف = قبل الكشف - (ضريبة القسط + ضريبة الدولة)
   var rows = [];
-  var balance = VISA5940.startBalance;
+  var afterPrev = VISA5940.startBalance - 947.14;
 
   VISA5940.schedule.forEach(function(s) {
     var totalInst = s.i1 + s.i2 + s.i2tax + s.stax;
-    var before = balance;
-    var after  = balance + totalInst; // بعد سداد الأقساط يرتفع الرصيد
-    // آخر شهر — رصيد كامل
+    var taxOnly   = s.i2tax + s.stax;
+    var before, after;
     if (s.i1 === 0 && s.i2 === 0) {
       before = limit;
       after  = limit;
+    } else {
+      before = Math.min(afterPrev + totalInst, limit);
+      after  = Math.min(before - taxOnly, limit);
     }
     rows.push({
       y: s.y, m: s.m,
-      before: Math.min(before, limit),
-      after:  Math.min(after,  limit),
+      before: Math.round(before * 100) / 100,
+      after:  Math.round(after  * 100) / 100,
       inst: totalInst,
       i1: s.i1, i2: s.i2, i2tax: s.i2tax, stax: s.stax,
       done: s.i1===0 && s.i2===0
     });
-    balance = after;
+    afterPrev = after;
   });
 
   // الشهر الحالي (المختار)
@@ -519,9 +525,8 @@ function getPeriod() {
   var m  = parseInt(document.getElementById('selMonth').value);
   var y  = parseInt(document.getElementById('selYear').value);
   var sd = parseInt(document.getElementById('startDay') ? document.getElementById('startDay').value : 27) || 27;
-  var ed = sd - 1; // يوم النهاية = يوم البداية - 1
-  // من 27 الشهر المختار → 26 الشهر التالي
-  // مثال: اختار "مايو" = من 27 مايو → 26 يونيو
+  var ed = 26; // يوم النهاية ثابت دائماً = 26
+  // من sd الشهر المختار → 26 الشهر التالي
   var nm = m+1, ny = y;
   if (nm > 11) { nm = 0; ny = y+1; }
   return {
@@ -713,14 +718,26 @@ function renderBudgets(period, p) {
     var dailyBudget  = info.dailyBudget; // 620
     var passed       = daysPassed(p.from);
     var dLeft        = daysLeft(p.to);
-    var dailyRate    = dailyBudget / 31;
+    var totalDays    = Math.ceil((p.to - p.from) / 86400000) + 1;
+    var dailyRate    = dailyBudget / totalDays;
+
     var dailyCashback = manualState.dailyCashback ? visaBuys.reduce(function(s,t){ return s+t.amount; },0) * 0.1 : 0;
     var expectedByNow = dailyRate * passed;
 
-    // المصروف اليومي = الكل - الأسبوعي اليدوي
-    var weeklySpent  = parseFloat(document.getElementById('grocWeekly') ? document.getElementById('grocWeekly').value : 0) || 0;
-    var dailySpent   = Math.max(0, totalSpent - weeklySpent);
-    var dailyDiff    = dailySpent - expectedByNow;
+    // المصروف اليومي = الكل - الأسبوعي (مجموع الأرباع)
+    var qSpentTemp = [
+      parseFloat(document.getElementById('grocQ1') ? document.getElementById('grocQ1').value : 0) || 0,
+      parseFloat(document.getElementById('grocQ2') ? document.getElementById('grocQ2').value : 0) || 0,
+      parseFloat(document.getElementById('grocQ3') ? document.getElementById('grocQ3').value : 0) || 0,
+      parseFloat(document.getElementById('grocQ4') ? document.getElementById('grocQ4').value : 0) || 0,
+    ];
+    var weeklySpent  = qSpentTemp.reduce(function(a,b){ return a+b; }, 0);
+    var dailyAdj     = manualState.grocDailyAdj  || 0;
+    var weeklyAdj    = manualState.grocWeeklyAdj || 0;
+    var posAdj       = Math.max(0, dailyAdj);  // موجب = دعم/واردة
+    var negAdj       = Math.min(0, dailyAdj);  // سالب = خصم/صادرة
+    var dailySpent   = Math.max(0, totalSpent - weeklySpent - negAdj); // السالب يزيد صرفت
+    var dailyDiff    = dailySpent - expectedByNow - posAdj; // الموجب يقلل العجز فقط
     var dailyDiffDays = dailyDiff / dailyRate;
     var dailySign    = dailyDiff > 0 ? 'عجز' : 'فائض';
     var dailyColor   = dailyDiff > 0 ? 'red' : 'green';
@@ -741,10 +758,11 @@ function renderBudgets(period, p) {
       parseFloat(document.getElementById('grocQ4') ? document.getElementById('grocQ4').value : 0) || 0,
     ];
     var totalQSpent = qSpent.reduce(function(a,b){ return a+b; }, 0);
-    // إجمالي المصروف الأسبوعي = مجموع الأرباع تلقائياً
-    var weeklySpent = totalQSpent;
+    // إجمالي المصروف الأسبوعي = مجموع الأرباع + تعديل يدوي
+    var weeklySpent = totalQSpent + weeklyAdj;
+
     var wLeft   = wBudget - weeklySpent;
-    var wLeftAfter  = wBudget - totalQSpent;
+    var wLeftAfter  = wBudget - totalQSpent - weeklyAdj;
     var quartersLeft = 4 - qSpent.filter(function(q){ return q > 0; }).length;
     var perQLeft    = quartersLeft > 0 ? wLeftAfter / quartersLeft : 0;
 
@@ -777,12 +795,16 @@ function renderBudgets(period, p) {
       // يومي
       + '<div style="font-size:.75rem;font-weight:800;color:var(--muted);margin-bottom:6px;">🕘 يومي (مخصص: '+fmt(dailyBudget)+' ر.س)</div>'
       + '<div class="arow"><span class="arow-label" style="color:var(--red)">🔻 صرفت (مدى+فيزا)</span><span class="arow-val red">' + fmt(dailySpent) + ' ر.س</span></div>'
+      + '<div class="arow" style="padding-right:12px"><span class="arow-label" style="color:var(--muted);font-size:.75rem">↳ مدى 4723</span><span class="arow-val" style="font-size:.75rem;color:var(--muted)">' + fmt(madaBuyTotal) + ' ر.س</span></div>'
+      + '<div class="arow" style="padding-right:12px"><span class="arow-label" style="color:var(--muted);font-size:.75rem">↳ فيزا 4057</span><span class="arow-val" style="font-size:.75rem;color:var(--muted)">' + fmt(visaBuyTotal) + ' ر.س</span></div>'
+      + '<div class="inp-row"><label>✏️ تعديل يدوي يومي</label><div style="display:flex;gap:6px;align-items:center"><button onclick="var v=Math.abs(parseFloat(document.getElementById(\'dAdj\').value)||0);manualState.grocDailyAdj=-v;document.getElementById(\'dAdj\').value=-v;render()" style="width:36px;height:36px;border-radius:8px;border:none;background:var(--red);color:#fff;font-size:1.1rem;cursor:pointer">−</button><input type="number" id="dAdj" value="'+(manualState.grocDailyAdj||0)+'" onchange="manualState.grocDailyAdj=parseFloat(this.value)||0;render()" style="width:80px;text-align:center"><button onclick="var v=Math.abs(parseFloat(document.getElementById(\'dAdj\').value)||0);manualState.grocDailyAdj=v;document.getElementById(\'dAdj\').value=v;render()" style="width:36px;height:36px;border-radius:8px;border:none;background:var(--green);color:#fff;font-size:1.1rem;cursor:pointer">+</button></div></div>'
       + '<div class="cb-row"><label>كاش باك 10% على اليومي</label>'
       + '<div class="cb-toggle">'
       + '<button class="cb-btn' + (manualState.dailyCashback?' active':'') + '" onclick="manualState.dailyCashback=true;render()">نعم</button>'
       + '<button class="cb-btn' + (!manualState.dailyCashback?' active':'') + '" onclick="manualState.dailyCashback=false;render()">لا</button>'
       + '</div></div>'
       + (manualState.dailyCashback ? '<div class="arow"><span class="arow-label">💰 كاش باك يومي</span><span class="arow-val green">+ ' + fmt(dailyCashback) + ' ر.س</span></div>' : '')
+      + '<div class="arow"><span class="arow-label">💵 متبقي يومي</span><span class="arow-val ' + (dailyBudget - dailySpent + posAdj >= 0 ? 'green' : 'red') + '">' + fmt(dailyBudget - dailySpent + posAdj) + ' ر.س</span></div>'
       + '<div class="arow"><span class="arow-label">' + dailyIcon + ' ' + dailySign + '</span><span class="arow-val ' + dailyColor + '">' + Math.abs(dailyDiffDays).toFixed(1) + ' يوم (' + fmt(Math.abs(dailyDiff)) + ' ر.س)</span></div>'
       + '<div class="arow"><span class="arow-label">📅 باقي من الشهر</span><span class="arow-val">' + dLeft + ' يوم</span></div>'
 
@@ -791,6 +813,7 @@ function renderBudgets(period, p) {
       // أسبوعي
       + '<div style="font-size:.75rem;font-weight:800;color:var(--muted);margin-bottom:6px;">🗓️ أسبوعي (مخصص: '+fmt(wBudget)+' ر.س)</div>'
       + '<div class="arow"><span class="arow-label">🔻 صرفت (مجموع الأرباع)</span><span class="arow-val red">' + fmt(weeklySpent) + ' ر.س</span></div>'
+      + '<div class="inp-row"><label>✏️ تعديل يدوي أسبوعي</label><div style="display:flex;gap:6px;align-items:center"><button onclick="var v=Math.abs(parseFloat(document.getElementById(\'wAdj\').value)||0);manualState.grocWeeklyAdj=-v;document.getElementById(\'wAdj\').value=-v;render()" style="width:36px;height:36px;border-radius:8px;border:none;background:var(--red);color:#fff;font-size:1.1rem;cursor:pointer">−</button><input type="number" id="wAdj" value="'+(manualState.grocWeeklyAdj||0)+'" onchange="manualState.grocWeeklyAdj=parseFloat(this.value)||0;render()" style="width:80px;text-align:center"><button onclick="var v=Math.abs(parseFloat(document.getElementById(\'wAdj\').value)||0);manualState.grocWeeklyAdj=v;document.getElementById(\'wAdj\').value=v;render()" style="width:36px;height:36px;border-radius:8px;border:none;background:var(--green);color:#fff;font-size:1.1rem;cursor:pointer">+</button></div></div>'
       + '<div class="arow"><span class="arow-label">متبقي</span><span class="arow-val ' + (wLeft>=0?'green':'red') + '">' + fmtSigned(wLeft) + ' ر.س</span></div>'
 
       + '<div style="margin:8px 0 4px;font-size:.72rem;color:var(--muted);">توزيع الأرباع:</div>'
