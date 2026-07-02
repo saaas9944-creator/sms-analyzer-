@@ -194,6 +194,8 @@ var allTx = [];
 // حالة يدوية محفوظة
 var manualState = {
   matSupport: 0,
+  matSupportVisa: 0,
+  matFirstBal: 0,
   grocWeekly: 0,
   grocWeeklyQ: [0,0,0,0],
   grocCashback: true,
@@ -211,9 +213,15 @@ function loadFile(e) {
   reader.onload = function(ev) {
     parseSMS(ev.target.result);
     var now = new Date();
-    // القائمة تختار الشهر الحالي دائماً (نفس ما يعرضه ميزانيتي)
-    document.getElementById('selMonth').value = now.getMonth();
-    document.getElementById('selYear').value = now.getFullYear();
+    var autoM = now.getMonth();
+    var autoY = now.getFullYear();
+    var sd = parseInt(document.getElementById('startDay').value) || 27;
+    if (now.getDate() < sd) {
+      autoM = autoM - 1;
+      if (autoM < 0) { autoM = 11; autoY = autoY - 1; }
+    }
+    document.getElementById('selMonth').value = autoM;
+    document.getElementById('selYear').value = autoY;
     document.getElementById('app').style.display = 'block';
     document.getElementById('budgetSection').innerHTML = '<p style="color:var(--accent);padding:10px;">✅ قُرئ الملف — '+allTx.length+' عملية — الفترة: '+new Date(getPeriod().from).toLocaleDateString()+' → '+new Date(getPeriod().to).toLocaleDateString()+'</p>';
     saveTx();
@@ -256,38 +264,9 @@ function saveUI() {
 }
 
 function loadFromStorage() {
-  try {
-    var state = localStorage.getItem(LS_KEY_STATE);
-    if (state) {
-      var parsed = JSON.parse(state);
-      Object.keys(parsed).forEach(function(k){ manualState[k] = parsed[k]; });
-    }
-  } catch(e) {}
-
-  try {
-    var tx = localStorage.getItem(LS_KEY_TX);
-    if (tx) {
-      allTx = JSON.parse(tx);
-      document.getElementById('app').style.display = 'block';
-      document.getElementById('budgetSection').innerHTML = '<p style="color:var(--accent);padding:10px;">📂 بيانات محفوظة — '+allTx.length+' عملية</p>';
-    }
-  } catch(e) {}
-
-  try {
-    var ui = localStorage.getItem(LS_KEY_UI);
-    if (ui) {
-      var u = JSON.parse(ui);
-      if (u.month !== null && document.getElementById('selMonth')) document.getElementById('selMonth').value = u.month;
-      if (u.year  !== null && document.getElementById('selYear'))  document.getElementById('selYear').value  = u.year;
-      if (u.day   !== null && document.getElementById('startDay')) document.getElementById('startDay').value = u.day;
-    }
-  } catch(e) {}
-
-  if (allTx.length > 0) {
-    renderVisa5940();
-    try { render(); } catch(e) {}
-  }
+  // مُعطَّل مؤقتاً
 }
+
 
 
 function parseSMS(xml) {
@@ -620,8 +599,7 @@ function currentQuarter(from, to) {
 
 // ========== عرض ==========
 function render() {
-  saveState();
-  saveUI();
+  if (allTx.length > 0) { saveState(); saveUI(); }
   var p = getPeriod();
   // حفظ حالة الـaccordion قبل إعادة البناء
   var accStates = {};
@@ -664,14 +642,16 @@ function renderBudgets(period, p) {
     var visaRefDone  = sum(visaRefsDone);
     var madaBuyTotal = sum(madaBuys);
     var transferNet  = transfers.reduce(function(s,t){ return s + (manualState.excludedTransfers['tr_'+t.dateMs]?0:t.sign*t.amount); }, 0);
-    var manSupport   = parseFloat(document.getElementById('matSupport') ? document.getElementById('matSupport').value : 0) || 0;
+    var manSupport      = manualState.matSupport || 0;
+    var manSupportVisa  = manualState.matSupportVisa || 0;
 
     var totalSpent   = madaBuyTotal + visaBuyTotal - visaRefDone;
     // غير مسدد = الحد الائتماني - آخر رصيد فعلي من الرسائل
     var visaAllTxsSorted = period.filter(function(t){ return t.card==='0897' && t.balance!=null; }).sort(function(a,b){return b.dateMs-a.dateMs;});
     var lastVisaBal  = visaAllTxsSorted.length ? visaAllTxsSorted[0].balance : null;
     var visaLimit    = 6000;
-    var unsettled    = lastVisaBal !== null ? Math.max(0, visaLimit - lastVisaBal) : Math.max(0, visaBuyTotal - visaPayTotal - visaRefDone);
+    var unsettledRaw = lastVisaBal !== null ? Math.max(0, visaLimit - lastVisaBal) : Math.max(0, visaBuyTotal - visaPayTotal - visaRefDone);
+    var unsettled    = Math.max(0, unsettledRaw - manSupportVisa);
     var madaBalance  = info.budget - madaBuyTotal - visaPayTotal + transferNet + manSupport;
     // ملاحظة: الكاش باك لا يؤثر على رصيد المدى — يؤثر فقط على رصيد الفيزا وبالتالي على غير مسدد
     var safeBalance  = madaBalance - unsettled;
@@ -693,15 +673,16 @@ function renderBudgets(period, p) {
     var visaTxs = period.filter(function(t){ return t.card==='0897' && t.balance!=null; })
                         .sort(function(a,b){ return a.dateMs-b.dateMs; });
     var verifyHtml = '';
-    if (visaTxs.length > 1) {
-      var firstBal = visaTxs[0].balance;
+    if (visaTxs.length >= 1) {
+      var firstBal = manualState.matFirstBal > 0 ? manualState.matFirstBal : visaTxs[0].balance;
       var lastBal  = visaTxs[visaTxs.length-1].balance;
       var visaCashbackTotal2 = period.filter(function(t){ return (t.card==='0897'||t.card==='4057') && t.txType==='cashback'; }).reduce(function(s,t){ return s+t.amount; },0);
-      var calc = firstBal - visaBuyTotal + visaPayTotal + visaCashbackTotal2;
+      var calc = firstBal - visaBuyTotal + visaPayTotal + visaCashbackTotal2 + manSupportVisa;
       var fdiff = Math.abs(calc - lastBal);
       var fok   = fdiff < 2;
       verifyHtml = '<hr class="divider">'
         + '<div class="arow"><span class="arow-label">🔍 تحقق رصيد الفيزا</span></div>'
+        + '<div class="inp-row"><label>🏁 رصيد البداية (يدوي)</label><input type="number" id="matFirstBal" value="' + (manualState.matFirstBal||'') + '" placeholder="اتركه فارغاً للتلقائي" oninput="manualState.matFirstBal=parseFloat(this.value)||0" onblur="render()" onkeydown="if(event.key===\'Enter\'){render();this.blur()}"></div>'
         + '<div class="arow"><span class="arow-label">أول رصيد</span><span class="arow-val">' + fmt(firstBal) + ' ر.س</span></div>'
         + '<div class="arow"><span class="arow-label">مشتريات</span><span class="arow-val red">- ' + fmt(visaBuyTotal) + ' ر.س</span></div>'
         + '<div class="arow"><span class="arow-label">سداد</span><span class="arow-val green">+ ' + fmt(visaPayTotal) + ' ر.س</span></div>'
@@ -750,7 +731,8 @@ function renderBudgets(period, p) {
         var activeTotal = allIn.filter(function(t){ return !manualState.excludedTransfers['tr_'+t.dateMs]; }).reduce(function(s,t){ return s+t.amount; },0);
         return rows + (activeTotal>0?'<div class="arow"><span class="arow-label" style="font-weight:700">🔄 صافي الدعم</span><span class="arow-val green">+ '+fmt(activeTotal)+' ر.س</span></div>':'');
       })()
-      + '<div class="inp-row"><label>🔄 دعم/تحويل يدوي (ر.س)</label><input type="number" id="matSupport" value="' + manualState.matSupport + '" onchange="manualState.matSupport=parseFloat(this.value)||0;render()"></div>'
+      + '<div class="inp-row"><label>🔄 دعم/تحويل يدوي مدى (ر.س)</label><input type="number" id="matSupport" value="' + manualState.matSupport + '" oninput="manualState.matSupport=parseFloat(this.value)||0" onblur="render()" onkeydown="if(event.key===\'Enter\'){render();this.blur()}"></div>'
+      + '<div class="inp-row"><label>💳 دعم/تحويل يدوي فيزا (ر.س)</label><input type="number" id="matSupportVisa" value="' + manualState.matSupportVisa + '" oninput="manualState.matSupportVisa=parseFloat(this.value)||0" onblur="render()" onkeydown="if(event.key===\'Enter\'){render();this.blur()}"></div>'
       + (refHtml ? '<hr class="divider">' + refHtml : '')
       + verifyHtml
       + '</div></div>';
@@ -980,7 +962,8 @@ function sendToMizaniti() {
   var visaRefMat   = period.filter(function(t){ return t.card==='0897' && t.txType==='refund_done'; });
   var madaBuysMat  = period.filter(function(t){ return t.card==='4822' && t.txType==='purchase'; });
   var transfers    = period.filter(function(t){ return t.card==='4822' && t.txType==='transfer'; });
-  var manSupport   = parseFloat(document.getElementById('matSupport') ? document.getElementById('matSupport').value : 0) || 0;
+  var manSupport   = manualState.matSupport || 0;
+  var manSupportVisa = manualState.matSupportVisa || 0;
 
   var visaBuyTotMat = sum(visaBuysMat);
   var visaPayTotMat = sum(visaPaysMat);
@@ -991,7 +974,8 @@ function sendToMizaniti() {
   // غير مسدد = الحد الائتماني - آخر رصيد فيزا من الرسائل
   var visaMatTxsSorted = period.filter(function(t){ return t.card==='0897' && t.balance!=null; }).sort(function(a,b){return b.dateMs-a.dateMs;});
   var lastVisaBalMat   = visaMatTxsSorted.length ? visaMatTxsSorted[0].balance : null;
-  var unsettledMat  = lastVisaBalMat !== null ? Math.max(0, 6000 - lastVisaBalMat) : Math.max(0, visaBuyTotMat - visaPayTotMat - visaRefTotMat);
+  var unsettledMatRaw = lastVisaBalMat !== null ? Math.max(0, 6000 - lastVisaBalMat) : Math.max(0, visaBuyTotMat - visaPayTotMat - visaRefTotMat);
+  var unsettledMat  = Math.max(0, unsettledMatRaw - manSupportVisa);
   var madaBalMat    = 1861 - madaBuyTotMat - visaPayTotMat + transferNet + manSupport;
   var safeBalMat    = madaBalMat - unsettledMat;
   var passed        = daysPassed(p.from);
@@ -1015,37 +999,41 @@ function sendToMizaniti() {
   var visaPaysGr   = period.filter(function(t){ return t.card==='4057' && t.txType==='payment'; });
   var visaRefGr    = period.filter(function(t){ return t.card==='4057' && t.txType==='refund_done'; });
   var madaBuysGr   = period.filter(function(t){ return t.card==='4723' && t.txType==='purchase'; });
-  var weeklySpent  = parseFloat(document.getElementById('grocWeekly') ? document.getElementById('grocWeekly').value : 0) || 0;
+  var weeklySpent  = manualState.grocWeeklyAdj || 0;
 
   var visaBuyTotGr = sum(visaBuysGr);
   var visaPayTotGr = sum(visaPaysGr);
   var visaRefTotGr = sum(visaRefGr);
   var madaBuyTotGr = sum(madaBuysGr);
   var totalSpentGr = madaBuyTotGr + visaBuyTotGr - visaRefTotGr;
-  var dailySpentGr = Math.max(0, totalSpentGr - weeklySpent);
-  var unsettledGr  = Math.max(0, visaBuyTotGr - visaPayTotGr - visaRefTotGr);
+  var qSpent = [
+    manualState.grocWeeklyQ[0] || 0,
+    manualState.grocWeeklyQ[1] || 0,
+    manualState.grocWeeklyQ[2] || 0,
+    manualState.grocWeeklyQ[3] || 0,
+  ];
+  var totalQSpent   = qSpent.reduce(function(a,b){ return a+b; }, 0);
+  var weeklyQSpent  = totalQSpent + (manualState.grocWeeklyAdj || 0);
+  var dailySpentGr  = Math.max(0, totalSpentGr - totalQSpent);
+  var visaGrTxsSorted = period.filter(function(t){ return t.card==='4057' && t.balance!=null; }).sort(function(a,b){return b.dateMs-a.dateMs;});
+  var lastVisaBalGr   = visaGrTxsSorted.length ? visaGrTxsSorted[0].balance : null;
+  var visaLimitGr     = 2500;
+  var unsettledGr  = lastVisaBalGr !== null ? Math.max(0, visaLimitGr - lastVisaBalGr) : Math.max(0, visaBuyTotGr - visaPayTotGr - visaRefTotGr);
   var madaBalGr    = 2070 - madaBuyTotGr - visaPayTotGr;
   var safeBalGr    = madaBalGr - unsettledGr;
   var dailyRateGr  = 620 / 31;
   var diffGr       = dailySpentGr - dailyRateGr * passed;
   var diffDaysGr   = diffGr / dailyRateGr;
   var cbActive     = manualState.grocCashback;
-  var cashback     = cbActive ? weeklySpent * 0.1 : 0;
+  var cashback     = cbActive ? weeklyQSpent * 0.1 : 0;
 
-  var qSpent = [
-    parseFloat(document.getElementById('grocQ1') ? document.getElementById('grocQ1').value : 0) || 0,
-    parseFloat(document.getElementById('grocQ2') ? document.getElementById('grocQ2').value : 0) || 0,
-    parseFloat(document.getElementById('grocQ3') ? document.getElementById('grocQ3').value : 0) || 0,
-    parseFloat(document.getElementById('grocQ4') ? document.getElementById('grocQ4').value : 0) || 0,
-  ];
-  var totalQSpent   = qSpent.reduce(function(a,b){ return a+b; }, 0);
-  var quartersLeft  = 4 - qSpent.filter(function(q){ return q > 0; }).length;
-  var perQLeft      = quartersLeft > 0 ? (1450 - totalQSpent) / quartersLeft : 0;
+  var quartersLeft  = qSpent.filter(function(q){ return q === 0; }).length;
+  var perQLeft      = quartersLeft > 0 ? (1450 - totalQSpent - (manualState.grocWeeklyAdj || 0)) / quartersLeft : 0;
 
   var grocData = {
     spent: totalSpentGr,
     dailySpent: dailySpentGr,
-    weeklySpent: weeklySpent,
+    weeklySpent: weeklyQSpent,
     unsettled: unsettledGr,
     madaBalance: madaBalGr,
     safeBalance: safeBalGr,
